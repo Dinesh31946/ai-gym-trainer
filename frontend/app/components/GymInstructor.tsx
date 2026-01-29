@@ -2,11 +2,6 @@
 import React, { useEffect, useRef, useState } from "react";
 import Webcam from "react-webcam";
 
-/**
- * TEACHER'S NOTE: 
- * We use a simpler 2D Angle math here. 
- * By using only X and Y, we avoid the "jitter" caused by the AI guessing depth.
- */
 const getAngle2D = (p1: any, p2: any, p3: any) => {
     const angle = Math.atan2(p3.y - p2.y, p3.x - p2.x) - Math.atan2(p1.y - p2.y, p1.x - p2.x);
     let result = Math.abs((angle * 180) / Math.PI);
@@ -17,9 +12,14 @@ const getAngle2D = (p1: any, p2: any, p3: any) => {
 const GymInstructor = () => {
     const webcamRef = useRef<Webcam>(null);
     const canvasRef = useRef<HTMLCanvasElement>(null);
+    
+    // LOGIC REFS: This is the secret to stopping the runaway counter.
+    // Unlike state, these update INSTANTLY and don't trigger re-renders.
+    const stageRef = useRef<"up" | "down">("up");
+    const lastAngleRef = useRef<number>(180);
 
     const [count, setCount] = useState(0);
-    const [stage, setStage] = useState("up"); // "up" or "down"
+    const [displayStage, setDisplayStage] = useState("up");
     const [liveAngle, setLiveAngle] = useState(180);
     const [isLoaded, setIsLoaded] = useState(false);
 
@@ -36,7 +36,7 @@ const GymInstructor = () => {
 
             pose.setOptions({
                 modelComplexity: 1,
-                smoothLandmarks: true, // This helps stop the "jitter"
+                smoothLandmarks: true,
                 minDetectionConfidence: 0.5,
                 minTrackingConfidence: 0.5,
             });
@@ -54,7 +54,6 @@ const GymInstructor = () => {
                     canvasCtx.save();
                     canvasCtx.clearRect(0, 0, canvas.width, canvas.height);
                     
-                    // Only draw the parts we need (Hip to Ankle)
                     drawConnectors(canvasCtx, results.poseLandmarks, [[24, 26], [26, 28]], { color: "#00FF00", lineWidth: 5 });
                     drawLandmarks(canvasCtx, results.poseLandmarks, { color: "#FF0000", radius: 2 });
 
@@ -63,26 +62,23 @@ const GymInstructor = () => {
                     const knee = landmarks[26];  
                     const ankle = landmarks[28]; 
 
-                    // Check if AI is sure it sees you
-                    if (hip && knee && ankle && hip.visibility! > 0.5) {
+                    // Ensure joints are visible and logic is safe
+                    if (hip && knee && ankle && (hip.visibility ?? 0) > 0.5) {
                         const angle = getAngle2D(hip, knee, ankle);
                         setLiveAngle(Math.round(angle));
 
-                        /**
-                         * STAGE LOGIC: 
-                         * To stop over-counting, we require a BIG movement.
-                         * 1. You MUST go below 110 degrees to set stage to "down".
-                         * 2. You MUST go above 160 degrees while in "down" to get a point.
-                         */
-                        if (angle < 110) {
-                            if (stage !== "down") {
-                                setStage("down");
-                            }
+                        // 1. SQUAT DOWN TRIGGER
+                        if (angle < 100 && stageRef.current === "up") {
+                            stageRef.current = "down";
+                            setDisplayStage("down");
                         }
                         
-                        if (angle > 160 && stage === "down") {
-                            setStage("up");
-                            setCount((c) => c + 1);
+                        // 2. STAND UP TRIGGER (THE COUNT)
+                        // We use a high angle (165) to ensure full completion
+                        if (angle > 165 && stageRef.current === "down") {
+                            stageRef.current = "up";
+                            setDisplayStage("up");
+                            setCount((c) => c + 1); // This now only runs ONCE per rep
                         }
                     }
                     canvasCtx.restore();
@@ -99,33 +95,37 @@ const GymInstructor = () => {
             setIsLoaded(true);
         };
         loadMediaPipe();
-    }, [stage]);
+    }, []); // Empty dependency array is important here!
 
     return (
-        <div className="flex flex-col lg:flex-row items-center justify-center min-h-screen bg-slate-950 p-4 gap-6 text-white overflow-hidden">
-            {/* Camera View */}
-            <div className="relative border-4 border-slate-700 rounded-2xl overflow-hidden bg-black shadow-lg">
+        <div className="flex flex-col lg:flex-row items-center justify-center min-h-screen bg-slate-950 p-4 gap-6 text-white overflow-hidden font-sans">
+            <div className="relative border-4 border-slate-700 rounded-3xl overflow-hidden bg-black shadow-2xl">
                 <Webcam ref={webcamRef} mirrored={true} className="w-full max-w-2xl h-auto" />
                 <canvas ref={canvasRef} className="absolute top-0 left-0 w-full h-auto" />
-                <div className="absolute top-4 left-4 bg-blue-600/80 px-3 py-1 rounded text-lg font-mono">
-                    Angle: {liveAngle}°
+                <div className="absolute bottom-4 right-4 bg-blue-600/90 px-4 py-2 rounded-full font-bold text-sm">
+                    Knee Angle: {liveAngle}°
                 </div>
             </div>
 
-            {/* Dashboard */}
             <div className="w-full max-w-xs flex flex-col gap-4">
-                <div className="bg-slate-900 p-6 rounded-2xl text-center border border-slate-700">
-                    <p className="text-slate-400 text-xs font-bold uppercase tracking-widest">Squat Reps</p>
-                    <h1 className="text-8xl font-black text-blue-500">{count}</h1>
-                    <p className="text-[10px] text-slate-600 mt-2 font-mono">STATUS: {stage.toUpperCase()}</p>
+                <div className="bg-slate-900 p-8 rounded-3xl text-center border border-slate-800 shadow-xl">
+                    <p className="text-slate-500 text-xs font-bold uppercase tracking-tighter">Squat Counter</p>
+                    <h1 className="text-9xl font-black text-blue-500 drop-shadow-lg">{count}</h1>
                 </div>
                 
-                <div className={`p-4 rounded-xl text-center font-bold uppercase border-b-4 ${stage === "down" ? "bg-green-600 border-green-800" : "bg-blue-800 border-blue-950"}`}>
-                    {stage === "down" ? "Stand Up!" : "Squat Down!"}
+                <div className={`p-5 rounded-2xl text-center font-bold text-xl transition-colors ${displayStage === "down" ? "bg-green-600 shadow-green-900/50 shadow-lg" : "bg-blue-800"}`}>
+                    {displayStage === "down" ? "NOW STAND UP!" : "GO LOW!"}
                 </div>
 
-                <button onClick={() => setCount(0)} className="py-3 bg-slate-800 rounded-xl font-bold hover:bg-red-900 transition-colors text-sm">
-                    RESET SESSION
+                <button 
+                    onClick={() => {
+                        setCount(0);
+                        stageRef.current = "up";
+                        setDisplayStage("up");
+                    }} 
+                    className="py-4 bg-slate-800 rounded-2xl font-bold hover:bg-red-900 transition-all text-sm border border-slate-700 active:scale-95"
+                >
+                    RESET COUNTER
                 </button>
             </div>
         </div>
